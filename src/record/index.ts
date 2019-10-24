@@ -1,6 +1,12 @@
 import { snapshot } from 'rrweb-snapshot';
 import initObservers from './observer';
-import { mirror, on, getWindowWidth, getWindowHeight } from '../utils';
+import {
+  mirror,
+  on,
+  getWindowWidth,
+  getWindowHeight,
+  polyfill,
+} from '../utils';
 import {
   EventType,
   event,
@@ -17,6 +23,8 @@ function wrapEvent(e: event): eventWithTime {
   };
 }
 
+let wrappedEmit!: (e: eventWithTime, isCheckout?: boolean) => void;
+
 function record(options: recordOptions = {}): listenerHandler | undefined {
   const {
     emit,
@@ -25,15 +33,19 @@ function record(options: recordOptions = {}): listenerHandler | undefined {
     blockClass = 'rr-block',
     ignoreClass = 'rr-ignore',
     inlineStylesheet = true,
+    maskAllInputs = false,
+    hooks,
   } = options;
   // runtime checks for user options
   if (!emit) {
     throw new Error('emit function is required');
   }
 
+  polyfill();
+
   let lastFullSnapshotEvent: eventWithTime;
   let incrementalSnapshotCount = 0;
-  const wrappedEmit = (e: eventWithTime, isCheckout?: boolean) => {
+  wrappedEmit = (e: eventWithTime, isCheckout?: boolean) => {
     emit(e, isCheckout);
     if (e.type === EventType.FullSnapshot) {
       lastFullSnapshotEvent = e;
@@ -63,7 +75,12 @@ function record(options: recordOptions = {}): listenerHandler | undefined {
       }),
       isCheckout,
     );
-    const [node, idNodeMap] = snapshot(document, blockClass, inlineStylesheet);
+    const [node, idNodeMap] = snapshot(
+      document,
+      blockClass,
+      inlineStylesheet,
+      maskAllInputs,
+    );
     if (!node) {
       return console.warn('Failed to snapshot the document');
     }
@@ -98,71 +115,75 @@ function record(options: recordOptions = {}): listenerHandler | undefined {
       takeFullSnapshot();
 
       handlers.push(
-        initObservers({
-          mutationCb: m =>
-            wrappedEmit(
-              wrapEvent({
-                type: EventType.IncrementalSnapshot,
-                data: {
-                  source: IncrementalSource.Mutation,
-                  ...m,
-                },
-              }),
-            ),
-          mousemoveCb: positions =>
-            wrappedEmit(
-              wrapEvent({
-                type: EventType.IncrementalSnapshot,
-                data: {
-                  source: IncrementalSource.MouseMove,
-                  positions,
-                },
-              }),
-            ),
-          mouseInteractionCb: d =>
-            wrappedEmit(
-              wrapEvent({
-                type: EventType.IncrementalSnapshot,
-                data: {
-                  source: IncrementalSource.MouseInteraction,
-                  ...d,
-                },
-              }),
-            ),
-          scrollCb: p =>
-            wrappedEmit(
-              wrapEvent({
-                type: EventType.IncrementalSnapshot,
-                data: {
-                  source: IncrementalSource.Scroll,
-                  ...p,
-                },
-              }),
-            ),
-          viewportResizeCb: d =>
-            wrappedEmit(
-              wrapEvent({
-                type: EventType.IncrementalSnapshot,
-                data: {
-                  source: IncrementalSource.ViewportResize,
-                  ...d,
-                },
-              }),
-            ),
-          inputCb: v =>
-            wrappedEmit(
-              wrapEvent({
-                type: EventType.IncrementalSnapshot,
-                data: {
-                  source: IncrementalSource.Input,
-                  ...v,
-                },
-              }),
-            ),
-          blockClass,
-          ignoreClass,
-          inlineStylesheet,
-        }),
+        initObservers(
+          {
+            mutationCb: m =>
+              wrappedEmit(
+                wrapEvent({
+                  type: EventType.IncrementalSnapshot,
+                  data: {
+                    source: IncrementalSource.Mutation,
+                    ...m,
+                  },
+                }),
+              ),
+            mousemoveCb: (positions, source) =>
+              wrappedEmit(
+                wrapEvent({
+                  type: EventType.IncrementalSnapshot,
+                  data: {
+                    source,
+                    positions,
+                  },
+                }),
+              ),
+            mouseInteractionCb: d =>
+              wrappedEmit(
+                wrapEvent({
+                  type: EventType.IncrementalSnapshot,
+                  data: {
+                    source: IncrementalSource.MouseInteraction,
+                    ...d,
+                  },
+                }),
+              ),
+            scrollCb: p =>
+              wrappedEmit(
+                wrapEvent({
+                  type: EventType.IncrementalSnapshot,
+                  data: {
+                    source: IncrementalSource.Scroll,
+                    ...p,
+                  },
+                }),
+              ),
+            viewportResizeCb: d =>
+              wrappedEmit(
+                wrapEvent({
+                  type: EventType.IncrementalSnapshot,
+                  data: {
+                    source: IncrementalSource.ViewportResize,
+                    ...d,
+                  },
+                }),
+              ),
+            inputCb: v =>
+              wrappedEmit(
+                wrapEvent({
+                  type: EventType.IncrementalSnapshot,
+                  data: {
+                    source: IncrementalSource.Input,
+                    ...v,
+                  },
+                }),
+              ),
+            blockClass,
+            ignoreClass,
+            maskAllInputs,
+            inlineStylesheet,
+          },
+          hooks,
+        ),
       );
     };
     if (
@@ -195,5 +216,20 @@ function record(options: recordOptions = {}): listenerHandler | undefined {
     console.warn(error);
   }
 }
+
+record.addCustomEvent = <T>(tag: string, payload: T) => {
+  if (!wrappedEmit) {
+    throw new Error('please add custom event after start recording');
+  }
+  wrappedEmit(
+    wrapEvent({
+      type: EventType.Custom,
+      data: {
+        tag,
+        payload,
+      },
+    }),
+  );
+};
 
 export default record;
